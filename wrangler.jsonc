@@ -4,6 +4,12 @@
   "main": "src/worker.js",
   "compatibility_date": "2026-09-15",
   "compatibility_flags": ["nodejs_compat"],
+  "routes": [
+    {
+      "pattern": "crt.foxtang.com",
+      "custom_domain": true
+    }
+  ],
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
@@ -17,4 +23,3 @@
     "head_sampling_rate": 0.1
   }
 }
-
