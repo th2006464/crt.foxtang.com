@@ -22,7 +22,7 @@ Browser
 - 域名标准化、输入验证与固定 crt.sh 上游，避免 SSRF
 - 证书与 SAN 清洗、去重、排序、状态判断
 - Wildcard 标识、域名筛选、复制反馈、证书详情
-- Cloudflare Cache API，默认 TTL 6 小时，响应头显示 `X-Cache: HIT/MISS`
+- Cloudflare Cache API：默认新鲜 TTL 6 小时；上游不可用时可回退最多 7 天的近期缓存，响应头显示 `X-Cache: HIT/MISS/STALE`
 - 上游 15 秒超时、10 MiB 响应上限与统一错误响应
 - 响应式布局和键盘、ARIA、reduced-motion 支持
 
@@ -48,6 +48,8 @@ GET /api/search?domain=example.com
 | 变量 | 默认值 | 说明 |
 | --- | ---: | --- |
 | `CACHE_TTL` | `21600` | Cloudflare 边缘缓存秒数 |
+| `STALE_CACHE_TTL` | `604800` | 上游异常时可回退的缓存最长秒数 |
+| `UPSTREAM_BACKOFF_TTL` | `90` | 上游失败后的短暂冷却秒数，避免重复请求 crt.sh |
 
 本项目没有密钥或必需的环境变量。
 
@@ -77,7 +79,7 @@ crt.foxtang.com
 
 ## 已知限制
 
-- crt.sh 偶尔响应缓慢或返回重复/异常数据；Cache MISS 延迟取决于上游。
+- crt.sh 偶尔响应缓慢或返回重复/异常数据；Cache MISS 延迟取决于上游。发生异常时，站点会优先返回近期缓存结果，并明确标注“缓存回退”。
 - Cloudflare Cache API 按数据中心缓存，不会自动跨 POP 复制，也不作为持久化存储。
 - 单次上游响应限制为 10 MiB；超大查询会返回统一错误。
 - CT 历史记录不代表域名当前存在、可访问或仍归当前持有人所有。

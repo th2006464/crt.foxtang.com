@@ -16,7 +16,9 @@
     "run_worker_first": ["/api/*"]
   },
   "vars": {
-    "CACHE_TTL": "21600"
+    "CACHE_TTL": "21600",
+    "STALE_CACHE_TTL": "604800",
+    "UPSTREAM_BACKOFF_TTL": "90"
   },
   "observability": {
     "enabled": true,

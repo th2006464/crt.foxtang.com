@@ -1,5 +1,7 @@
 const CRT_SH_ORIGIN = "https://crt.sh";
 const DEFAULT_CACHE_TTL = 21_600;
+const DEFAULT_STALE_CACHE_TTL = 604_800;
+const DEFAULT_UPSTREAM_BACKOFF_TTL = 90;
 const UPSTREAM_TIMEOUT_MS = 15_000;
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 const MAX_DOMAIN_LENGTH = 253;
@@ -124,6 +126,26 @@ function jsonError(error, message, status) {
   });
 }
 
+function withCacheHeader(response, cacheStatus, extraHeaders = {}) {
+  const headers = new Headers(response.headers);
+  headers.set("X-Cache", cacheStatus);
+  for (const [name, value] of Object.entries(extraHeaders)) headers.set(name, value);
+  return new Response(response.body, { status: response.status, headers });
+}
+
+function staleResponse(response) {
+  return withCacheHeader(response, "STALE", {
+    "Cache-Control": "no-store",
+    "X-Data-Freshness": "stale",
+  });
+}
+
+function cacheableUpstreamError(error, message, status, backoffTtl) {
+  return jsonResponse({ success: false, error, message }, status, {
+    "Cache-Control": `public, s-maxage=${backoffTtl}`,
+  });
+}
+
 async function readJsonWithLimit(response) {
   const declaredLength = Number(response.headers.get("Content-Length"));
   if (declaredLength > MAX_RESPONSE_BYTES) throw new Error("UPSTREAM_TOO_LARGE");
@@ -183,26 +205,37 @@ async function handleSearch(request, env, ctx) {
   }
 
   const ttl = Math.max(60, Number.parseInt(env.CACHE_TTL, 10) || DEFAULT_CACHE_TTL);
+  const staleTtl = Math.max(ttl, Number.parseInt(env.STALE_CACHE_TTL, 10) || DEFAULT_STALE_CACHE_TTL);
+  const backoffTtl = Math.max(30, Number.parseInt(env.UPSTREAM_BACKOFF_TTL, 10) || DEFAULT_UPSTREAM_BACKOFF_TTL);
   const cacheKey = new Request(`${requestUrl.origin}/__cache/cert/${encodeURIComponent(domain)}`);
+  const staleCacheKey = new Request(`${requestUrl.origin}/__cache/cert-stale/${encodeURIComponent(domain)}`);
+  const backoffCacheKey = new Request(`${requestUrl.origin}/__cache/cert-backoff/${encodeURIComponent(domain)}`);
   const cache = caches.default;
   const cached = await cache.match(cacheKey);
   if (cached) {
-    const headers = new Headers(cached.headers);
-    headers.set("X-Cache", "HIT");
-    return new Response(cached.body, { status: cached.status, headers });
+    return withCacheHeader(cached, "HIT");
+  }
+
+  const staleCached = await cache.match(staleCacheKey);
+  const upstreamBackoff = await cache.match(backoffCacheKey);
+  if (upstreamBackoff) {
+    return staleCached ? staleResponse(staleCached) : withCacheHeader(upstreamBackoff, "COOLDOWN");
   }
 
   let upstream;
   try {
     upstream = await fetchUpstream(domain);
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      return jsonError("UPSTREAM_TIMEOUT", "查询服务暂时响应较慢，请稍后重试。", 504);
-    }
-    return jsonError("UPSTREAM_ERROR", "公开证书数据源暂时不可用，请稍后重试。", 502);
+    const errorResponse = error instanceof Error && error.name === "AbortError"
+      ? cacheableUpstreamError("UPSTREAM_TIMEOUT", "查询服务暂时响应较慢，请稍后重试。", 504, backoffTtl)
+      : cacheableUpstreamError("UPSTREAM_ERROR", "公开证书数据源暂时不可用，请稍后重试。", 502, backoffTtl);
+    ctx.waitUntil(cache.put(backoffCacheKey, errorResponse.clone()));
+    return staleCached ? staleResponse(staleCached) : errorResponse;
   }
   if (!upstream.ok) {
-    return jsonError("UPSTREAM_ERROR", "公开证书数据源暂时不可用，请稍后重试。", 502);
+    const errorResponse = cacheableUpstreamError("UPSTREAM_ERROR", "公开证书数据源暂时不可用，请稍后重试。", 502, backoffTtl);
+    ctx.waitUntil(cache.put(backoffCacheKey, errorResponse.clone()));
+    return staleCached ? staleResponse(staleCached) : errorResponse;
   }
 
   try {
@@ -212,10 +245,18 @@ async function handleSearch(request, env, ctx) {
       "Cache-Control": `public, s-maxage=${ttl}`,
       "X-Cache": "MISS",
     });
-    ctx.waitUntil(cache.put(cacheKey, response.clone()));
+    const staleResponseForCache = jsonResponse(result, 200, {
+      "Cache-Control": `public, s-maxage=${staleTtl}`,
+    });
+    ctx.waitUntil(Promise.all([
+      cache.put(cacheKey, response.clone()),
+      cache.put(staleCacheKey, staleResponseForCache),
+    ]));
     return response;
   } catch {
-    return jsonError("INVALID_UPSTREAM_RESPONSE", "数据源返回异常，请稍后重试。", 502);
+    const errorResponse = cacheableUpstreamError("INVALID_UPSTREAM_RESPONSE", "数据源返回异常，请稍后重试。", 502, backoffTtl);
+    ctx.waitUntil(cache.put(backoffCacheKey, errorResponse.clone()));
+    return staleCached ? staleResponse(staleCached) : errorResponse;
   }
 }
 
