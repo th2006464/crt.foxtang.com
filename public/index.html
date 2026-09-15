@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#f4f7fb">
+    <meta name="description" content="查询公开 Certificate Transparency 日志中的 SSL/TLS 证书、历史域名与子域名记录。">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/style.css">
+    <title>证书透明度查询 - Certificate Transparency</title>
+  </head>
+  <body>
+    <canvas class="threads-bg" aria-hidden="true"></canvas>
+    <main class="app">
+      <header class="hero">
+        <div class="logo" aria-hidden="true">✓</div>
+        <h1>证书透明度查询</h1>
+        <p>查询公开 CT 日志中出现过的证书与域名</p>
+      </header>
+
+      <section class="search-card card" aria-labelledby="search-title">
+        <div>
+          <h2 id="search-title">查询域名资产</h2>
+          <p>输入域名或完整网址，系统会自动提取主机名。</p>
+        </div>
+        <form id="search-form" novalidate>
+          <label class="sr-only" for="domain-input">域名</label>
+          <input id="domain-input" name="domain" type="text" inputmode="url" autocomplete="url" maxlength="2048" placeholder="example.com" required>
+          <button id="submit-button" type="submit">查询</button>
+        </form>
+        <p class="privacy-note">查询通过本站 Cloudflare Worker 转发至公开 CT 数据源。本站不建立证书数据库，也不保存您的查询历史。</p>
+      </section>
+
+      <div id="feedback" class="feedback" aria-live="polite"></div>
+      <section id="empty-state" class="card empty-state">
+        <div class="empty-icon" aria-hidden="true">⌕</div>
+        <h2>输入域名开始查询</h2>
+        <p>例如 example.com。结果仅代表域名曾出现在公开证书中。</p>
+      </section>
+
+      <section id="loading-state" class="results hidden" aria-label="正在加载">
+        <div class="card skeleton-card"><span></span><span></span><span></span></div>
+        <div class="card skeleton-card"><span></span><span></span><span></span></div>
+      </section>
+
+      <section id="error-state" class="card error-card hidden" role="alert">
+        <h2>查询未完成</h2>
+        <p id="error-message"></p>
+      </section>
+
+      <section id="result-state" class="results hidden" aria-label="查询结果">
+        <article class="card summary-card">
+          <div class="section-head"><div><span class="eyebrow">查询摘要</span><h2 id="summary-domain"></h2></div><span id="cache-badge" class="badge"></span></div>
+          <dl class="summary-grid">
+            <div><dt>发现域名</dt><dd id="domain-count">0</dd></div>
+            <div><dt>证书记录</dt><dd id="cert-count">0</dd></div>
+            <div><dt>数据来源</dt><dd>crt.sh</dd></div>
+            <div><dt>查询时间</dt><dd id="query-time">—</dd></div>
+          </dl>
+        </article>
+
+        <article class="card">
+          <div class="section-head"><div><span class="eyebrow">域名资产</span><h2>发现的域名</h2></div><button id="show-all" class="text-button hidden" type="button">显示全部</button></div>
+          <label class="filter-label" for="domain-filter">筛选发现的域名</label>
+          <input id="domain-filter" class="filter-input" type="search" placeholder="输入关键词筛选">
+          <div id="domain-list" class="domain-list"></div>
+        </article>
+
+        <article class="card">
+          <div class="section-head"><div><span class="eyebrow">证书历史</span><h2>证书记录</h2></div></div>
+          <div id="certificate-list" class="certificate-list"></div>
+        </article>
+      </section>
+
+      <footer class="foot">
+        <p>本站应用层不建立查询历史数据库。Cloudflare 边缘缓存可能短期缓存结果，以减少对上游服务的重复请求。</p>
+        <p>数据来源于公开 Certificate Transparency 日志及 <a href="https://crt.sh/" target="_blank" rel="noopener noreferrer">crt.sh</a>。历史记录不代表域名当前仍存在、可访问或属于当前持有人。</p>
+      </footer>
+    </main>
+    <div id="toast" class="toast" role="status">已复制</div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
+

@@ -1,0 +1,16 @@
+{
+  "name": "crt.foxtang.com",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "wrangler deploy --dry-run && node --test",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.1",
+    "wrangler": "^4.37.1"
+  }
+}
