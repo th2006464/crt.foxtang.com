@@ -158,32 +158,49 @@ function initThreads() {
   const canvas = $(".threads-bg");
   const context = canvas.getContext("2d", { alpha: true });
   const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  let width = 0, height = 0, ratio = 1, frame;
+  let width = 0, height = 0, ratio = 1, frame = 0;
+  let mouse = { x: .5, y: .5 };
+  let target = { x: .5, y: .5 };
   function resize() {
     ratio = Math.min(devicePixelRatio || 1, 1.5); width = innerWidth; height = innerHeight;
     canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
+    canvas.style.width = `${width}px`; canvas.style.height = `${height}px`;
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
   }
   function draw(time = 0) {
     context.clearRect(0, 0, width, height);
-    for (let line = 0; line < 24; line += 1) {
-      const progress = line / 23; context.beginPath();
-      for (let x = -20; x <= width + 20; x += 14) {
+    mouse.x += (target.x - mouse.x) * .035;
+    mouse.y += (target.y - mouse.y) * .035;
+    const phase = time * .00016;
+    const amplitude = Math.min(height * .13, 135) * (1 + (mouse.y - .5) * .18);
+    const base = height * .28;
+    context.lineCap = "round";
+    for (let line = 0; line < 30; line += 1) {
+      const progress = line / 29; context.beginPath();
+      for (let x = -20; x <= width + 20; x += 12) {
         const nx = x / Math.max(width, 1);
-        const y = height * (.24 + progress * .45) + Math.sin(nx * 8 + time * .0008 + line * .18) * height * .025 * nx;
+        const fade = Math.pow(Math.max(0, nx), .72);
+        const wave = Math.sin(nx * 7.2 + phase * 6 + progress * 4.6) + .46 * Math.sin(nx * 15.5 - phase * 3 + progress * 8.1);
+        const y = base + progress * height * .42 + wave * amplitude * fade * .24 + (mouse.x - .5) * 32 * fade;
         x === -20 ? context.moveTo(x, y) : context.lineTo(x, y);
       }
       context.strokeStyle = `rgba(31,126,235,${.015 + (1 - progress) * .05})`;
       context.lineWidth = .7 + (1 - progress) * .7; context.stroke();
     }
-    if (!reduced) frame = requestAnimationFrame(draw);
+    if (!reduced && !document.hidden) frame = requestAnimationFrame(draw);
   }
-  addEventListener("resize", () => { resize(); if (reduced) draw(); }, { passive: true });
+  addEventListener("resize", () => { resize(); draw(); }, { passive: true });
+  addEventListener("pointermove", (event) => {
+    target.x = event.clientX / Math.max(innerWidth, 1);
+    target.y = 1 - event.clientY / Math.max(innerHeight, 1);
+  }, { passive: true });
   resize(); draw();
-  document.addEventListener("visibilitychange", () => { cancelAnimationFrame(frame); if (!document.hidden && !reduced) frame = requestAnimationFrame(draw); });
+  document.addEventListener("visibilitychange", () => {
+    cancelAnimationFrame(frame);
+    if (!document.hidden && !reduced) frame = requestAnimationFrame(draw);
+  });
 }
 
 initThreads();
 const initialQuery = new URLSearchParams(location.search).get("q");
 if (initialQuery) { input.value = initialQuery; search(initialQuery); }
-
