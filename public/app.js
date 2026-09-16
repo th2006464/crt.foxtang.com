@@ -1,4 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
+const root = document.documentElement;
+const themeMeta = document.querySelector('meta[name="theme-color"]');
 const form = $("#search-form");
 const input = $("#domain-input");
 const submit = $("#submit-button");
@@ -164,9 +166,14 @@ function initThreads() {
   const canvas = $(".threads-bg");
   const context = canvas.getContext("2d", { alpha: true });
   const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let lineRgb = [31, 126, 235];
   let width = 0, height = 0, ratio = 1, frame = 0;
   let mouse = { x: .5, y: .5 };
   let target = { x: .5, y: .5 };
+  function refreshLineColor() {
+    const value = getComputedStyle(root).getPropertyValue("--line-rgb").trim();
+    if (value) lineRgb = value.split(",").map((part) => parseFloat(part.trim()));
+  }
   function resize() {
     ratio = Math.min(devicePixelRatio || 1, 1.5); width = innerWidth; height = innerHeight;
     canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
@@ -190,7 +197,7 @@ function initThreads() {
         const y = base + progress * height * .42 + wave * amplitude * fade * .24 + (mouse.x - .5) * 32 * fade;
         x === -20 ? context.moveTo(x, y) : context.lineTo(x, y);
       }
-      context.strokeStyle = `rgba(31,126,235,${.015 + (1 - progress) * .05})`;
+      context.strokeStyle = `rgba(${lineRgb.join(",")},${.015 + (1 - progress) * .05})`;
       context.lineWidth = .7 + (1 - progress) * .7; context.stroke();
     }
     if (!reduced && !document.hidden) frame = requestAnimationFrame(draw);
@@ -200,12 +207,22 @@ function initThreads() {
     target.x = event.clientX / Math.max(innerWidth, 1);
     target.y = 1 - event.clientY / Math.max(innerHeight, 1);
   }, { passive: true });
+  refreshLineColor();
+  addEventListener("ct-themechange", () => { refreshLineColor(); draw(); });
   resize(); draw();
   document.addEventListener("visibilitychange", () => {
     cancelAnimationFrame(frame);
     if (!document.hidden && !reduced) frame = requestAnimationFrame(draw);
   });
 }
+
+$("#theme-toggle").addEventListener("click", () => {
+  const next = root.dataset.theme === "dark" ? "light" : "dark";
+  root.dataset.theme = next;
+  localStorage.setItem("ct-theme", next);
+  themeMeta?.setAttribute("content", next === "dark" ? "#0b1730" : "#f4f7fb");
+  dispatchEvent(new CustomEvent("ct-themechange"));
+});
 
 initThreads();
 const initialQuery = new URLSearchParams(location.search).get("q");
