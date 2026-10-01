@@ -97,11 +97,15 @@ function renderResult(data, cacheStatus) {
   $("#domain-count").textContent = data.domains.length;
   $("#cert-count").textContent = data.certificates.length;
   $("#query-time").textContent = formatDate(data.queryTime, true);
-  $("#cache-badge").textContent = {
+  const cacheLabel = {
     HIT: "缓存命中",
     STALE: "缓存回退",
     COOLDOWN: "数据源冷却中",
   }[cacheStatus] || "实时查询";
+  const sourceLabel = { "crt.sh": "crt.sh", certspotter: "Cert Spotter", "ctlogs.dev": "ctlogs.dev" }[data.source];
+  $("#cache-badge").textContent = sourceLabel
+    ? `${cacheLabel} · 数据来源：${sourceLabel}${cacheStatus === "STALE" ? " · 缓存数据" : ""}`
+    : cacheLabel;
   currentDomains = data.domains;
   showAll = false;
   domainFilter.value = "";

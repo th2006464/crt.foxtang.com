@@ -1,4 +1,6 @@
 const CRT_SH_ORIGIN = "https://crt.sh";
+const CERT_SPOTTER_ORIGIN = "https://api.certspotter.com";
+const CTLOGS_ORIGIN = "https://ctlogs.dev";
 const DEFAULT_CACHE_TTL = 21_600;
 const DEFAULT_STALE_CACHE_TTL = 604_800;
 const DEFAULT_UPSTREAM_BACKOFF_TTL = 90;
@@ -113,6 +115,25 @@ export function normalizeCrtShResult(domain, raw, now = new Date()) {
   };
 }
 
+function resultFromNames(domain, source, names, now) {
+  const domains = [...new Set(names.map(normalizeName).filter((name) => name && belongsToDomain(name, domain)))].sort((a, b) => {
+    const wildcardDiff = Number(a.startsWith("*.")) - Number(b.startsWith("*."));
+    return wildcardDiff || domainDepth(a) - domainDepth(b) || a.localeCompare(b);
+  });
+  return { success: true, domain, source, queryTime: now.toISOString(), count: 0, domains, certificates: [] };
+}
+
+export function normalizeCertSpotterResult(domain, raw, now = new Date()) {
+  if (!Array.isArray(raw)) throw new Error("INVALID_PROVIDER_RESPONSE");
+  return resultFromNames(domain, "certspotter", raw.flatMap((item) => Array.isArray(item?.dns_names) ? item.dns_names : []), now);
+}
+
+export function normalizeCtlogsResult(domain, raw, now = new Date()) {
+  const entries = Array.isArray(raw) ? raw : Array.isArray(raw?.subdomains) ? raw.subdomains : null;
+  if (!entries) throw new Error("INVALID_PROVIDER_RESPONSE");
+  return resultFromNames(domain, "ctlogs.dev", entries.map((name) => String(name).includes(".") ? name : `${name}.${domain}`), now);
+}
+
 function jsonResponse(body, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(body), {
     status,
@@ -174,12 +195,9 @@ async function readJsonWithLimit(response) {
   return JSON.parse(new TextDecoder().decode(bytes));
 }
 
-async function fetchUpstream(domain) {
-  const url = new URL(CRT_SH_ORIGIN);
-  url.searchParams.set("q", `%.${domain}`);
-  url.searchParams.set("output", "json");
+async function fetchProvider(url, timeoutMs) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, {
       headers: {
@@ -192,6 +210,22 @@ async function fetchUpstream(domain) {
     clearTimeout(timer);
   }
 }
+
+export async function fetchCrtSh(domain) {
+  const url = new URL(CRT_SH_ORIGIN); url.searchParams.set("q", `%.${domain}`); url.searchParams.set("output", "json");
+  return fetchProvider(url, 8_000);
+}
+export async function fetchCertSpotter(domain) {
+  const url = new URL("/v1/issuances", CERT_SPOTTER_ORIGIN); url.searchParams.set("domain", domain); url.searchParams.set("include_subdomains", "true"); url.searchParams.set("expand", "dns_names");
+  return fetchProvider(url, 6_000);
+}
+export async function fetchCtlogs(domain) { return fetchProvider(new URL(`/v1/subdomains/${encodeURIComponent(domain)}`, CTLOGS_ORIGIN), 6_000); }
+
+const PROVIDERS = [
+  { id: "crt.sh", fetch: fetchCrtSh, normalize: normalizeCrtShResult },
+  { id: "certspotter", fetch: fetchCertSpotter, normalize: normalizeCertSpotterResult },
+  { id: "ctlogs.dev", fetch: fetchCtlogs, normalize: normalizeCtlogsResult },
+];
 
 async function handleSearch(request, env, ctx) {
   if (request.method !== "GET") {
@@ -209,7 +243,6 @@ async function handleSearch(request, env, ctx) {
   const backoffTtl = Math.max(30, Number.parseInt(env.UPSTREAM_BACKOFF_TTL, 10) || DEFAULT_UPSTREAM_BACKOFF_TTL);
   const cacheKey = new Request(`${requestUrl.origin}/__cache/cert/${encodeURIComponent(domain)}`);
   const staleCacheKey = new Request(`${requestUrl.origin}/__cache/cert-stale/${encodeURIComponent(domain)}`);
-  const backoffCacheKey = new Request(`${requestUrl.origin}/__cache/cert-backoff/${encodeURIComponent(domain)}`);
   const cache = caches.default;
   const cached = await cache.match(cacheKey);
   if (cached) {
@@ -217,47 +250,40 @@ async function handleSearch(request, env, ctx) {
   }
 
   const staleCached = await cache.match(staleCacheKey);
-  const upstreamBackoff = await cache.match(backoffCacheKey);
-  if (upstreamBackoff) {
-    return staleCached ? staleResponse(staleCached) : withCacheHeader(upstreamBackoff, "COOLDOWN");
-  }
-
-  let upstream;
-  try {
-    upstream = await fetchUpstream(domain);
-  } catch (error) {
-    const errorResponse = error instanceof Error && error.name === "AbortError"
-      ? cacheableUpstreamError("UPSTREAM_TIMEOUT", "查询服务暂时响应较慢，请稍后重试。", 504, backoffTtl)
-      : cacheableUpstreamError("UPSTREAM_ERROR", "公开证书数据源暂时不可用，请稍后重试。", 502, backoffTtl);
-    ctx.waitUntil(cache.put(backoffCacheKey, errorResponse.clone()));
-    return staleCached ? staleResponse(staleCached) : errorResponse;
-  }
-  if (!upstream.ok) {
-    const errorResponse = cacheableUpstreamError("UPSTREAM_ERROR", "公开证书数据源暂时不可用，请稍后重试。", 502, backoffTtl);
-    ctx.waitUntil(cache.put(backoffCacheKey, errorResponse.clone()));
-    return staleCached ? staleResponse(staleCached) : errorResponse;
-  }
-
-  try {
-    const raw = await readJsonWithLimit(upstream);
-    const result = normalizeCrtShResult(domain, raw);
+  let lastTimeout = false;
+  for (const provider of PROVIDERS) {
+    const providerBackoffKey = new Request(`${requestUrl.origin}/__cache/provider-backoff/${provider.id}`);
+    if (await cache.match(providerBackoffKey)) continue;
+    try {
+      const upstream = await provider.fetch(domain);
+      if (!upstream.ok) throw new Error("UPSTREAM_ERROR");
+      const result = provider.normalize(domain, await readJsonWithLimit(upstream));
+      if (result.domains.length === 0 && staleCached) {
+        const stale = await staleCached.clone().json();
+        if ((stale.domains?.length || 0) + (stale.certificates?.length || 0) > 0) return staleResponse(staleCached);
+      }
     const response = jsonResponse(result, 200, {
       "Cache-Control": `public, s-maxage=${ttl}`,
       "X-Cache": "MISS",
+      "X-CT-Source": result.source,
     });
     const staleResponseForCache = jsonResponse(result, 200, {
       "Cache-Control": `public, s-maxage=${staleTtl}`,
+      "X-CT-Source": result.source,
     });
     ctx.waitUntil(Promise.all([
       cache.put(cacheKey, response.clone()),
       cache.put(staleCacheKey, staleResponseForCache),
     ]));
     return response;
-  } catch {
-    const errorResponse = cacheableUpstreamError("INVALID_UPSTREAM_RESPONSE", "数据源返回异常，请稍后重试。", 502, backoffTtl);
-    ctx.waitUntil(cache.put(backoffCacheKey, errorResponse.clone()));
-    return staleCached ? staleResponse(staleCached) : errorResponse;
+    } catch (error) {
+      lastTimeout = error instanceof Error && error.name === "AbortError";
+      const cooldown = cacheableUpstreamError("UPSTREAM_ERROR", "公开证书数据源暂时不可用，请稍后重试。", 502, backoffTtl);
+      ctx.waitUntil(cache.put(providerBackoffKey, cooldown));
+    }
   }
+  const errorResponse = cacheableUpstreamError(lastTimeout ? "UPSTREAM_TIMEOUT" : "UPSTREAM_ERROR", "公开证书数据源暂时不可用，请稍后重试。", lastTimeout ? 504 : 502, backoffTtl);
+  return staleCached ? staleResponse(staleCached) : errorResponse;
 }
 
 export default {

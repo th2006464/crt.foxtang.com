@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import worker, { isValidDomain, normalizeCrtShResult, normalizeDomain } from "../src/worker.js";
+import worker, { isValidDomain, normalizeCertSpotterResult, normalizeCtlogsResult, normalizeCrtShResult, normalizeDomain } from "../src/worker.js";
 
 test("normalizes URL input to a hostname", () => {
   assert.equal(normalizeDomain(" HTTPS://Example.COM/path?q=1 "), "example.com");
@@ -27,6 +27,12 @@ test("cleans, scopes, deduplicates, and sorts crt.sh records", () => {
   assert.equal(result.certificates[0].id, 2);
   assert.equal(result.certificates[0].status, "valid");
   assert.equal(result.certificates[1].status, "expired");
+});
+
+test("normalizes fallback provider results within the requested domain", () => {
+  const now = new Date("2026-02-01T00:00:00Z");
+  assert.deepEqual(normalizeCertSpotterResult("example.com", [{ dns_names: ["WWW.EXAMPLE.COM.", "*.example.com", "example.com.attacker.com"] }], now).domains, ["www.example.com", "*.example.com"]);
+  assert.deepEqual(normalizeCtlogsResult("example.com", { subdomains: ["api", "www.example.com", "attacker.com"] }, now).domains, ["api.example.com", "www.example.com"]);
 });
 
 test("serves a recent cached result when crt.sh is unavailable", async () => {
@@ -62,4 +68,23 @@ test("serves a recent cached result when crt.sh is unavailable", async () => {
     globalThis.fetch = originalFetch;
     globalThis.caches = originalCaches;
   }
+});
+
+test("falls back from crt.sh to Cert Spotter in sequence", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  const calls = [];
+  globalThis.caches = { default: { async match() { return undefined; }, async put() {} } };
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    if (calls.length === 1) return new Response("bad", { status: 502 });
+    return Response.json([{ dns_names: ["api.example.com"] }]);
+  };
+  try {
+    const response = await worker.fetch(new Request("https://cert.example/api/search?domain=example.com"), {}, { waitUntil() {} });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("X-CT-Source"), "certspotter");
+    assert.match(calls[1], /include_subdomains=true/);
+    assert.equal((await response.json()).domains[0], "api.example.com");
+  } finally { globalThis.fetch = originalFetch; globalThis.caches = originalCaches; }
 });
